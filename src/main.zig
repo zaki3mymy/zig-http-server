@@ -20,7 +20,8 @@ fn handler(res: *std.http.Server.Response) !void {
     defer _ = res.reset();
 
     try res.wait();
-    res.transfer_encoding = .{ .content_length = 14 };
+    const res_body = "Hello, Zig!\n";
+    res.transfer_encoding = .{ .content_length = res_body.len };
     try res.do();
-    _ = try res.write("Hello, World!\n");
+    _ = try res.write(res_body);
 }
