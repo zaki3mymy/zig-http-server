@@ -15,15 +15,16 @@ pub fn main() !void {
     const absPath = try std.fs.realpath("./html", &out_buffer);
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    var fileSet = try files.createFileSet(absPath, allocator);
+    var fileMap = try files.createFileMap(absPath, allocator);
+    defer fileMap.deinit();
 
-    log.info("server start.");
+    log.info("server start.", .{});
     while (true) {
         const acceptOptions = .{ .allocator = std.heap.page_allocator, .header_strategy = .{ .dynamic = 8192 } };
         var res = try server.accept(acceptOptions);
 
         if (res.wait()) {
-            const thread = try std.Thread.spawn(.{}, handler, .{ &res, &fileSet });
+            const thread = try std.Thread.spawn(.{}, handler, .{ &res, &fileMap });
             thread.detach();
         } else |err| switch (err) {
             http.Server.Request.ParseError.UnknownHttpMethod => {
@@ -33,12 +34,12 @@ pub fn main() !void {
                 _ = try res.write("");
                 continue;
             },
-            else => unreachable,
+            else => continue,
         }
     }
 }
 
-fn handler(res: *http.Server.Response, fileSet: *std.BufSet) !void {
+fn handler(res: *http.Server.Response, fileMap: *std.BufMap) !void {
     defer _ = res.reset();
 
     var req: http.Server.Request = res.request;
@@ -50,11 +51,14 @@ fn handler(res: *http.Server.Response, fileSet: *std.BufSet) !void {
         @tagName(req.version),
     });
 
-    if (fileSet.contains(req.target)) {
-        const res_body = "Hello, Zig!\n";
-        res.transfer_encoding = .{ .content_length = res_body.len };
+    if (std.mem.eql(u8, req.target, "/")) {
+        req.target = "/index.html";
+    }
+
+    if (fileMap.get(req.target)) |contents| {
+        res.transfer_encoding = .{ .content_length = contents.len };
         try res.do();
-        _ = try res.write(res_body);
+        _ = try res.write(contents);
     } else {
         res.status = http.Status.not_found;
         const res_body = "Not Found.\n";
