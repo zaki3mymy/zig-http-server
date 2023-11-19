@@ -3,7 +3,6 @@ const http = std.http;
 const log = std.log;
 
 const datetime = @import("./util/datetime.zig");
-const logging = @import("./util/logger.zig").logging;
 const files = @import("./files.zig");
 
 pub fn main() !void {
@@ -14,51 +13,53 @@ pub fn main() !void {
 
     var out_buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
     const absPath = try std.fs.realpath("./html", &out_buffer);
-    log.info("createFileSet...", .{});
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    const fileSet = try files.createFileSet(absPath, allocator);
-    _ = fileSet;
-    log.info("createFileSet has done.", .{});
+    var fileSet = try files.createFileSet(absPath, allocator);
 
+    log.info("server start.");
     while (true) {
         const acceptOptions = .{ .allocator = std.heap.page_allocator, .header_strategy = .{ .dynamic = 8192 } };
         var res = try server.accept(acceptOptions);
-        var res_ptr: *http.Server.Response = &res;
 
-        const thread = try std.Thread.spawn(.{}, handler, .{res_ptr});
-        thread.detach();
+        if (res.wait()) {
+            const thread = try std.Thread.spawn(.{}, handler, .{ &res, &fileSet });
+            thread.detach();
+        } else |err| switch (err) {
+            http.Server.Request.ParseError.UnknownHttpMethod => {
+                res.status = http.Status.method_not_allowed;
+                res.transfer_encoding = .{ .content_length = 0 };
+                try res.do();
+                _ = try res.write("");
+                continue;
+            },
+            else => unreachable,
+        }
     }
 }
 
-fn handler(res: *http.Server.Response) !void {
+fn handler(res: *http.Server.Response, fileSet: *std.BufSet) !void {
     defer _ = res.reset();
 
     var req: http.Server.Request = res.request;
-    _ = req;
-    // try res.wait() catch |err| {
-    //     if (err == http.Server.Request.ParseError.UnknownHttpMethod) {
-    //         res.status = http.Status.method_not_allowed;
-    //         std.debug.print("Unknown HTTP Method: {}.\n", .{req.method});
-    //         return;
-    //     }
-    // };
-    log.info("request from {}", .{res.address});
+    log.info("{s} {} {s} {s} {s}", .{
+        datetime.now().toString(), //
+        res.address, //
+        @tagName(req.method), //
+        req.target, //
+        @tagName(req.version),
+    });
 
-    if (res.wait()) {
-        // logging(req.target);
-    } else |err| switch (err) {
-        http.Server.Request.ParseError.UnknownHttpMethod => {
-            res.status = http.Status.method_not_allowed;
-            res.transfer_encoding = .{ .content_length = 0 };
-            try res.do();
-            _ = try res.write("");
-            return;
-        },
-        else => unreachable,
+    if (fileSet.contains(req.target)) {
+        const res_body = "Hello, Zig!\n";
+        res.transfer_encoding = .{ .content_length = res_body.len };
+        try res.do();
+        _ = try res.write(res_body);
+    } else {
+        res.status = http.Status.not_found;
+        const res_body = "Not Found.\n";
+        res.transfer_encoding = .{ .content_length = res_body.len };
+        try res.do();
+        _ = try res.write(res_body);
     }
-    const res_body = "Hello, Zig!\n";
-    res.transfer_encoding = .{ .content_length = res_body.len };
-    try res.do();
-    _ = try res.write(res_body);
 }
